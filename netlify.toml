@@ -1,9 +1,0 @@
-[build]
-  publish = "."
-
-# Netlify serves pretty URLs (/dashboard instead of /dashboard.html) by default.
-# This just makes it explicit.
-[[redirects]]
-  from = "/*"
-  to = "/404.html"
-  status = 404
