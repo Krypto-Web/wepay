@@ -11,7 +11,7 @@
 
 <div class="wp-container wp-page">
   <h2>📺 View Ads & Earn</h2>
-  <p class="muted">Tap "View Ad" — it opens in a new tab. Stay there for the timer, then come back and tap the same button again to claim.</p>
+  <p class="muted">Tap "View Ad" — it opens in a new tab. Stay there for the full timer. When you switch back to this tab, we check automatically — only one ad can run at a time.</p>
 
   <div class="wp-grid cols-3 mt-24">
     <div class="stat"><div class="label">Wallet Balance</div><div class="value accent" id="balance">$0.00</div></div>
@@ -20,6 +20,9 @@
   </div>
 
   <div id="wp-alerts"></div>
+  <div id="busyBanner" class="card mt-24" style="display:none; border-color:var(--gold);">
+    <p style="margin:0; color:var(--gold);">⏳ You have a Surf & Earn campaign in progress. Finish or cancel it there before starting an ad here.</p>
+  </div>
 
   <div class="wp-grid cols-3 mt-24" id="adGrid">
     <p class="muted">Loading ads…</p>
@@ -29,7 +32,9 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="assets/app.js"></script>
 <script>
-let ads = [], claimedToday = new Set(), pending = {}; // item_id -> { sessionId, startTime, requiredSeconds }
+let ads = [], claimedToday = new Set();
+let pending = null; // { itemId, sessionId, startTime, requiredSeconds, ready } — only ONE at a time, or null
+let otherCampaignActive = false; // true if a SURF session is blocking this page
 let sharedAdUrl = 'https://example.com';
 
 (async function init(){
@@ -37,9 +42,37 @@ let sharedAdUrl = 'https://example.com';
   renderNav('ptc');
   const { data: settings } = await sb.from('site_settings').select('ptc_ad_url').eq('id', 1).single();
   if(settings) sharedAdUrl = settings.ptc_ad_url;
+
+  await checkExistingSession();
   await refreshStats();
   await loadAds();
+
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible') checkReturn();
+  });
 })();
+
+// On page load, see if the user already has an active session from earlier
+// (either an ad on this page, or a surf session that should block this page).
+async function checkExistingSession(){
+  const { data: sessions } = await sb.from('click_sessions').select('*').eq('status','active').order('started_at', { ascending:false }).limit(1);
+  if(!sessions || sessions.length === 0) return;
+  const s = sessions[0];
+
+  if(s.item_type === 'surf'){
+    otherCampaignActive = true;
+    document.getElementById('busyBanner').style.display = 'block';
+    return;
+  }
+
+  // It's a ptc session — figure out which ad and re-hydrate pending state
+  const { data: ad } = await sb.from('ptc_ads').select('*').eq('id', s.item_id).single();
+  if(!ad) return;
+  const startTime = new Date(s.started_at).getTime();
+  pending = { itemId: s.item_id, sessionId: s.id, startTime, requiredSeconds: ad.duration_seconds, ready: false };
+  // Check immediately in case enough time has already passed while away
+  checkReturn();
+}
 
 async function refreshStats(){
   const profile = await getMyProfile();
@@ -61,73 +94,109 @@ async function loadAds(){
   const grid = document.getElementById('adGrid');
   if(error || !data || data.length === 0){ grid.innerHTML = '<p class="muted">No ads available right now — check back later.</p>'; return; }
   ads = data;
+  renderAll();
+}
+
+function renderAll(){
+  const grid = document.getElementById('adGrid');
   grid.innerHTML = ads.map(ad => renderAdCard(ad)).join('');
 }
 
 function renderAdCard(ad){
   const done = claimedToday.has(ad.id);
-  const isPending = !!pending[ad.id];
+  const isPendingThis = pending && pending.itemId === ad.id;
+  const anyOtherBusy = otherCampaignActive || (pending && pending.itemId !== ad.id);
+
+  let badgeText = ad.duration_seconds + 's watch';
+  let btnText = 'View Ad';
+  let btnDisabled = done || anyOtherBusy;
+  let btnAction = `startAd('${ad.id}')`;
+
+  if(isPendingThis){
+    if(pending.ready){
+      badgeText = 'Ready to claim';
+      btnText = 'Back — Claim Now';
+      btnDisabled = false;
+      btnAction = `claimAd('${ad.id}')`;
+    } else {
+      badgeText = 'Waiting for you to return…';
+      btnText = 'Waiting — tap to check';
+      btnDisabled = false;
+      btnAction = `checkReturn()`;
+    }
+  }
+
   return `
     <div class="item ${done ? 'is-claimed' : ''}" id="card-${ad.id}">
       <div class="item-content">
-        <span class="badge ${isPending ? 'pending' : ''}">${isPending ? 'Waiting for you to return' : ad.duration_seconds + 's watch'}</span>
+        <span class="badge ${isPendingThis && pending.ready ? 'done' : (isPendingThis ? 'pending' : '')}">${badgeText}</span>
         <div style="font-size:24px;">${ad.icon || '💼'}</div>
         <h3 style="margin:0;">${ad.title}</h3>
         <p class="muted" style="font-size:13px; margin:0;">${ad.subtitle || ''}</p>
         <div class="reward">+$${Number(ad.reward).toFixed(2)}</div>
-        <button class="btn ${done ? 'btn-outline' : 'btn-primary'}" ${done ? 'disabled' : ''}
-          onclick="handleAdClick('${ad.id}')" id="btn-${ad.id}">
-          ${done ? 'Come back tomorrow' : (isPending ? 'Back — Claim Now' : 'View Ad')}
+        <button class="btn ${btnDisabled && !isPendingThis ? 'btn-outline' : 'btn-primary'}" ${btnDisabled ? 'disabled' : ''}
+          onclick="${btnAction}" id="btn-${ad.id}">
+          ${done ? 'Come back tomorrow' : btnText}
         </button>
       </div>
     </div>`;
 }
 
-async function handleAdClick(adId){
-  if(pending[adId]){
-    await claimAd(adId);
-  } else {
-    await startAd(adId);
-  }
-}
-
 async function startAd(adId){
-  const btn = document.getElementById(`btn-${adId}`);
-  btn.disabled = true;
+  if(pending || otherCampaignActive){ showAlert('Finish your current campaign first — only one at a time.', 'warning'); return; }
   const { data: sessionId, error } = await sb.rpc('start_click_session', { p_item_type: 'ptc', p_item_id: adId });
-  btn.disabled = false;
-  if(error){ showAlert(error.message.includes('daily limit') ? 'Daily ad limit reached for today.' : error.message, 'warning'); return; }
+  if(error){
+    if(error.message.includes('campaign_in_progress')) showAlert('You already have a campaign running. Finish it before starting another.', 'warning');
+    else if(error.message.includes('daily limit')) showAlert('Daily ad limit reached for today.', 'warning');
+    else showAlert(error.message, 'warning');
+    return;
+  }
 
   const ad = ads.find(a => a.id === adId);
   window.open(sharedAdUrl, '_blank');
-  pending[adId] = { sessionId, startTime: Date.now(), requiredSeconds: ad.duration_seconds };
+  pending = { itemId: adId, sessionId, startTime: Date.now(), requiredSeconds: ad.duration_seconds, ready: false };
 
-  showAlert(`Ad opened on <b>${ad.title}</b>! Stay there for ${ad.duration_seconds}s, then come back here and tap the button again.`, 'success');
-  document.getElementById(`card-${adId}`).outerHTML = renderAdCard(ad);
+  showAlert(`Ad opened on <b>${ad.title}</b>! Stay there for ${ad.duration_seconds}s, then switch back to this tab.`, 'success');
+  renderAll();
+}
+
+// Called automatically on tab focus, or manually via the "tap to check" fallback button
+async function checkReturn(){
+  if(!pending) return;
+  const elapsed = Math.floor((Date.now() - pending.startTime)/1000);
+
+  if(elapsed >= pending.requiredSeconds){
+    pending.ready = true;
+    renderAll();
+    return;
+  }
+
+  // Came back too early — instantly reject and reset, they must start over
+  const remaining = pending.requiredSeconds - elapsed;
+  await sb.rpc('cancel_click_session', { p_session_id: pending.sessionId });
+  showAlert(`You came back too early! You needed ${remaining} more second${remaining===1?'':'s'}. Tap "View Ad" to start over.`, 'warning');
+  pending = null;
+  renderAll();
 }
 
 async function claimAd(adId){
+  if(!pending || pending.itemId !== adId) return;
   const btn = document.getElementById(`btn-${adId}`);
-  btn.disabled = true; btn.textContent = 'Checking…';
-  const session = pending[adId];
-  const { data: reward, error } = await sb.rpc('claim_click_session', { p_session_id: session.sessionId });
+  btn.disabled = true; btn.textContent = 'Claiming…';
+
+  const { data: reward, error } = await sb.rpc('claim_click_session', { p_session_id: pending.sessionId });
 
   if(error){
-    if(error.message.includes('timer not finished')){
-      const elapsed = Math.floor((Date.now() - session.startTime)/1000);
-      const remaining = Math.max(1, session.requiredSeconds - elapsed);
-      showAlert(`You came back too early! Go back to the ad and stay for ${remaining} more second${remaining===1?'':'s'}.`, 'warning');
-    } else {
-      showAlert(error.message, 'warning');
-    }
-    btn.disabled = false; btn.textContent = "I'm back — Claim";
+    // Rare edge case: clock drift etc. — treat like an early return.
+    showAlert(error.message.includes('timer not finished') ? 'Not quite enough time has passed yet — try again shortly.' : error.message, 'warning');
+    btn.disabled = false; btn.textContent = 'Back — Claim Now';
     return;
   }
 
   showAlert(`Reward claimed: +$${Number(reward).toFixed(2)} 🎉`, 'success');
-  delete pending[adId];
   claimedToday.add(adId);
-  document.getElementById(`card-${adId}`).outerHTML = renderAdCard(ads.find(a=>a.id===adId));
+  pending = null;
+  renderAll();
   refreshStats();
 }
 </script>
