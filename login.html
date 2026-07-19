@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign In — WePay</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="card auth-card">
+  <a href="index" class="wp-logo" style="font-family:'Space Grotesk'; font-weight:700; font-size:20px; color:var(--accent);">WePay</a>
+  <h2 class="mt-24">Welcome back</h2>
+  <p class="muted">Sign in to keep earning.</p>
+
+  <label>Email</label>
+  <input type="email" id="email" placeholder="you@example.com">
+  <label>Password</label>
+  <input type="password" id="password" placeholder="••••••••">
+
+  <button class="btn btn-primary btn-block mt-24" id="loginBtn" onclick="doLogin()">Sign In</button>
+  <p class="muted center mt-24">No account? <a href="register" style="color:var(--accent);">Create one</a></p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/app.js"></script>
+<script>
+async function doLogin(){
+  const btn = document.getElementById('loginBtn');
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  if(!email || !password){ toast('Enter email and password', true); return; }
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  btn.disabled = false; btn.textContent = 'Sign In';
+  if(error){ toast(error.message, true); return; }
+  window.location.href = 'dashboard';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Create Account — WePay</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="card auth-card">
+  <a href="index" class="wp-logo" style="font-family:'Space Grotesk'; font-weight:700; font-size:20px; color:var(--accent);">WePay</a>
+  <h2 class="mt-24">Create your account</h2>
+  <p class="muted">Start earning USDT in minutes.</p>
+
+  <label>Full name</label>
+  <input type="text" id="fullName" placeholder="Jane Doe">
+  <label>Email</label>
+  <input type="email" id="email" placeholder="you@example.com">
+  <label>Password</label>
+  <input type="password" id="password" placeholder="At least 6 characters">
+  <label>Referral code <span class="muted">(optional)</span></label>
+  <input type="text" id="refCode" placeholder="e.g. 8f3ab21c">
+
+  <button class="btn btn-primary btn-block mt-24" id="registerBtn" onclick="doRegister()">Create Account</button>
+  <p class="muted center mt-24">Already have an account? <a href="login" style="color:var(--accent);">Sign in</a></p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/app.js"></script>
+<script>
+// Pre-fill referral code if they arrived via ?ref=CODE link
+const params = new URLSearchParams(window.location.search);
+if(params.get('ref')) document.getElementById('refCode').value = params.get('ref');
+
+async function doRegister(){
+  const btn = document.getElementById('registerBtn');
+  const full_name = document.getElementById('fullName').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const refCode = document.getElementById('refCode').value.trim();
+
+  if(!full_name || !email || password.length < 6){
+    toast('Fill all fields — password needs 6+ characters', true); return;
+  }
+  btn.disabled = true; btn.textContent = 'Creating account…';
+
+  const { data, error } = await sb.auth.signUp({
+    email, password,
+    options: { data: { full_name } }
+  });
+
+  if(error){ btn.disabled = false; btn.textContent = 'Create Account'; toast(error.message, true); return; }
+
+  // If a referral code was given, apply it (safe no-op if invalid/self)
+  if(refCode){
+    // Small delay so the profile row (created by DB trigger) exists first
+    await new Promise(r => setTimeout(r, 800));
+    await sb.rpc('apply_referral', { p_referral_code: refCode });
+  }
+
+  toast('Account created! Redirecting…');
+  setTimeout(() => window.location.href = 'dashboard', 1000);
+}
+</script>
+</body>
+</html>

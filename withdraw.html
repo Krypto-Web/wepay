@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Withdraw — WePay</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div id="wp-nav"></div>
+
+<div class="wp-container wp-page">
+  <h2>💸 Withdraw</h2>
+  <p class="muted">Request a USDT withdrawal. Requests are reviewed and sent manually by our team, usually within 24–48 hours.</p>
+
+  <div class="wp-grid cols-2 mt-24">
+    <div class="stat"><div class="label">Wallet Balance</div><div class="value accent" id="balance">$0.00</div></div>
+    <div class="card">
+      <label>Amount (USD)</label>
+      <input type="number" id="amount" placeholder="10.00" step="0.01" min="1">
+      <label>USDT Wallet Address</label>
+      <input type="text" id="address" placeholder="T...">
+      <label>Network</label>
+      <select id="network">
+        <option value="TRC20">TRC20 (Tron) — recommended, low fees</option>
+        <option value="ERC20">ERC20 (Ethereum)</option>
+        <option value="BEP20">BEP20 (BNB Chain)</option>
+      </select>
+      <button class="btn btn-primary btn-block mt-24" id="reqBtn" onclick="requestWithdrawal()">Request Withdrawal</button>
+    </div>
+  </div>
+
+  <div class="card mt-24">
+    <h3>Your Withdrawal History</h3>
+    <table>
+      <thead><tr><th>Date</th><th>Amount</th><th>Address</th><th>Network</th><th>Status</th></tr></thead>
+      <tbody id="wdBody"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/app.js"></script>
+<script>
+(async function init(){
+  await requireAuth();
+  renderNav('withdraw');
+  await loadData();
+})();
+
+async function loadData(){
+  const profile = await getMyProfile();
+  document.getElementById('balance').textContent = fmtUSD(profile.wallet_balance);
+
+  const { data, error } = await sb.from('withdrawals').select('*').order('requested_at', { ascending:false });
+  const tbody = document.getElementById('wdBody');
+  if(error || !data || data.length === 0){ tbody.innerHTML = '<tr><td colspan="5" class="muted">No withdrawals yet.</td></tr>'; return; }
+  tbody.innerHTML = data.map(w => `
+    <tr>
+      <td>${new Date(w.requested_at).toLocaleDateString()}</td>
+      <td>${fmtUSD(w.amount)}</td>
+      <td class="muted" style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${w.usdt_address}</td>
+      <td>${w.network}</td>
+      <td><span class="pill ${w.status}">${w.status}</span></td>
+    </tr>`).join('');
+}
+
+async function requestWithdrawal(){
+  const btn = document.getElementById('reqBtn');
+  const amount = parseFloat(document.getElementById('amount').value);
+  const address = document.getElementById('address').value.trim();
+  const network = document.getElementById('network').value;
+
+  if(!amount || amount <= 0){ toast('Enter a valid amount', true); return; }
+  if(!address){ toast('Enter your USDT wallet address', true); return; }
+
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  const { error } = await sb.rpc('request_withdrawal', { p_amount: amount, p_address: address, p_network: network });
+  btn.disabled = false; btn.textContent = 'Request Withdrawal';
+
+  if(error){ toast(error.message.includes('insufficient') ? 'Insufficient balance' : error.message, true); return; }
+  toast('Withdrawal requested!');
+  document.getElementById('amount').value = '';
+  document.getElementById('address').value = '';
+  loadData();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>View Ads & Earn — WePay</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div id="wp-nav"></div>
+
+<div class="wp-container wp-page">
+  <h2>📺 View Ads & Earn</h2>
+  <p class="muted">Click an ad, keep the new tab open until the timer ends, then come back and claim.</p>
+
+  <div class="wp-grid cols-3 mt-24">
+    <div class="stat"><div class="label">Wallet Balance</div><div class="value accent" id="balance">$0.00</div></div>
+    <div class="stat"><div class="label">Viewed Today</div><div class="value" id="countToday">0 / 200</div></div>
+    <div class="stat"><div class="label">Earned Today</div><div class="value" id="earnedToday">$0.00</div></div>
+  </div>
+
+  <div class="wp-grid cols-3 mt-40" id="adGrid">
+    <p class="muted">Loading ads…</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/app.js"></script>
+<script>
+let ads = [], claimedToday = new Set(), activeSessions = {}, sharedAdUrl = 'https://example.com';
+
+(async function init(){
+  await requireAuth();
+  renderNav('ptc');
+  const { data: settings } = await sb.from('site_settings').select('ptc_ad_url').eq('id', 1).single();
+  if(settings) sharedAdUrl = settings.ptc_ad_url;
+  await refreshStats();
+  await loadAds();
+})();
+
+async function refreshStats(){
+  const profile = await getMyProfile();
+  document.getElementById('balance').textContent = fmtUSD(profile.wallet_balance);
+
+  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  const { data: sessions } = await sb.from('click_sessions')
+    .select('item_id, status')
+    .eq('item_type', 'ptc').eq('claim_date', new Date().toISOString().slice(0,10));
+  claimedToday = new Set((sessions||[]).filter(s=>s.status==='claimed').map(s=>s.item_id));
+  document.getElementById('countToday').textContent = `${(sessions||[]).length} / 200`;
+  document.getElementById('earnedToday').textContent = fmtUSD(
+    (sessions||[]).length ? await earnedTodaySum('ptc_reward') : 0
+  );
+}
+
+async function earnedTodaySum(type){
+  const start = new Date(); start.setHours(0,0,0,0);
+  const { data } = await sb.from('wallet_transactions').select('amount').eq('type', type).gte('created_at', start.toISOString());
+  return (data||[]).reduce((s,t)=>s+Number(t.amount),0);
+}
+
+async function loadAds(){
+  const { data, error } = await sb.from('ptc_ads').select('*').eq('is_active', true).order('reward');
+  const grid = document.getElementById('adGrid');
+  if(error || !data || data.length === 0){ grid.innerHTML = '<p class="muted">No ads available right now — check back later.</p>'; return; }
+  ads = data;
+  grid.innerHTML = ads.map(ad => renderAdCard(ad)).join('');
+}
+
+function renderAdCard(ad){
+  const done = claimedToday.has(ad.id);
+  return `
+    <div class="item" id="card-${ad.id}">
+      <span class="badge ${done ? 'done' : ''}">${done ? '✓ Viewed today' : ad.duration_seconds + 's watch'}</span>
+      <h3 style="margin:0;">${ad.title}</h3>
+      <div class="reward">+$${Number(ad.reward).toFixed(2)}</div>
+      <button class="btn ${done ? 'btn-outline' : 'btn-primary'}" ${done ? 'disabled' : ''}
+        onclick="startAd('${ad.id}')" id="btn-${ad.id}">
+        ${done ? 'Come back tomorrow' : 'View Ad'}
+      </button>
+    </div>`;
+}
+
+async function startAd(adId){
+  const btn = document.getElementById(`btn-${adId}`);
+  btn.disabled = true; btn.textContent = 'Starting…';
+  const { data: sessionId, error } = await sb.rpc('start_click_session', { p_item_type: 'ptc', p_item_id: adId });
+  if(error){ toast(error.message.includes('daily limit') ? 'Daily ad limit reached' : error.message, true); btn.disabled = false; btn.textContent = 'View Ad'; return; }
+
+  const ad = ads.find(a => a.id === adId);
+  window.open(sharedAdUrl, '_blank');
+  activeSessions[adId] = { sessionId, endTime: Date.now() + ad.duration_seconds * 1000 };
+
+  btn.textContent = `Waiting… ${ad.duration_seconds}s`;
+  const timer = setInterval(() => {
+    const remain = Math.ceil((activeSessions[adId].endTime - Date.now())/1000);
+    if(remain <= 0){
+      clearInterval(timer);
+      btn.textContent = 'Claim Reward';
+      btn.disabled = false;
+      btn.classList.remove('btn-primary'); btn.classList.add('btn-primary');
+      btn.onclick = () => claimAd(adId);
+    } else {
+      btn.textContent = `Waiting… ${remain}s`;
+    }
+  }, 500);
+}
+
+async function claimAd(adId){
+  const btn = document.getElementById(`btn-${adId}`);
+  btn.disabled = true; btn.textContent = 'Claiming…';
+  const session = activeSessions[adId];
+  const { data: reward, error } = await sb.rpc('claim_click_session', { p_session_id: session.sessionId });
+  if(error){ toast(error.message, true); btn.disabled = false; btn.textContent = 'Claim Reward'; return; }
+  toast(`+$${Number(reward).toFixed(2)} claimed!`);
+  claimedToday.add(adId);
+  document.getElementById(`card-${adId}`).outerHTML = renderAdCard(ads.find(a=>a.id===adId));
+  refreshStats();
+}
+</script>
+</body>
+</html>
