@@ -98,9 +98,10 @@ function renderNav(active) {
     el.innerHTML = `
       <div class="wp-nav-inner">
         <a href="dashboard" class="wp-logo">WePay</a>
-        <nav class="wp-links">${links}</nav>
+        <nav class="wp-links" id="wp-links">${links}</nav>
         <span id="wp-admin-link"></span>
         <button class="wp-signout" onclick="signOut()">Sign Out</button>
+        <button class="wp-hamburger" onclick="document.getElementById('wp-links').classList.toggle('open')">☰</button>
       </div>`;
     // Show an Admin link if the current user is an admin (fire-and-forget, non-blocking)
     getMyProfile().then(p => {
@@ -110,4 +111,4 @@ function renderNav(active) {
       }
     });
   }
-}
+  }
