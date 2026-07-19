@@ -11,7 +11,7 @@
 
 <div class="wp-container wp-page">
   <h2>🌊 Surf & Earn</h2>
-  <p class="muted">Tap "Start Surfing" — it opens in a new tab. Browse for the full timer, then come back and tap the same button again to claim.</p>
+  <p class="muted">Tap "Start Surfing" — it opens in a new tab. Browse there for the full timer. When you switch back to this tab, we check automatically — only one campaign can run at a time.</p>
 
   <div class="wp-grid cols-3 mt-24">
     <div class="stat"><div class="label">Wallet Balance</div><div class="value accent" id="balance">$0.00</div></div>
@@ -20,6 +20,9 @@
   </div>
 
   <div id="wp-alerts"></div>
+  <div id="busyBanner" class="card mt-24" style="display:none; border-color:var(--gold);">
+    <p style="margin:0; color:var(--gold);">⏳ You have a View Ads campaign in progress. Finish or cancel it there before starting a surf session here.</p>
+  </div>
 
   <div class="wp-grid cols-3 mt-24" id="siteGrid">
     <p class="muted">Loading sites…</p>
@@ -29,7 +32,9 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="assets/app.js"></script>
 <script>
-let sites = [], claimedToday = new Set(), pending = {};
+let sites = [], claimedToday = new Set();
+let pending = null; // { itemId, sessionId, startTime, requiredSeconds, ready } — only ONE at a time, or null
+let otherCampaignActive = false; // true if a PTC session is blocking this page
 let sharedSiteUrl = 'https://example.com';
 
 (async function init(){
@@ -37,9 +42,33 @@ let sharedSiteUrl = 'https://example.com';
   renderNav('surf');
   const { data: settings } = await sb.from('site_settings').select('surf_site_url').eq('id', 1).single();
   if(settings) sharedSiteUrl = settings.surf_site_url;
+
+  await checkExistingSession();
   await refreshStats();
   await loadSites();
+
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible') checkReturn();
+  });
 })();
+
+async function checkExistingSession(){
+  const { data: sessions } = await sb.from('click_sessions').select('*').eq('status','active').order('started_at', { ascending:false }).limit(1);
+  if(!sessions || sessions.length === 0) return;
+  const s = sessions[0];
+
+  if(s.item_type === 'ptc'){
+    otherCampaignActive = true;
+    document.getElementById('busyBanner').style.display = 'block';
+    return;
+  }
+
+  const { data: site } = await sb.from('surf_sites').select('*').eq('id', s.item_id).single();
+  if(!site) return;
+  const startTime = new Date(s.started_at).getTime();
+  pending = { itemId: s.item_id, sessionId: s.id, startTime, requiredSeconds: site.duration_seconds, ready: false };
+  checkReturn();
+}
 
 async function refreshStats(){
   const profile = await getMyProfile();
@@ -61,73 +90,106 @@ async function loadSites(){
   const grid = document.getElementById('siteGrid');
   if(error || !data || data.length === 0){ grid.innerHTML = '<p class="muted">No sites available right now — check back later.</p>'; return; }
   sites = data;
+  renderAll();
+}
+
+function renderAll(){
+  const grid = document.getElementById('siteGrid');
   grid.innerHTML = sites.map(s => renderCard(s)).join('');
 }
 
 function renderCard(site){
   const done = claimedToday.has(site.id);
-  const isPending = !!pending[site.id];
+  const isPendingThis = pending && pending.itemId === site.id;
+  const anyOtherBusy = otherCampaignActive || (pending && pending.itemId !== site.id);
+
+  let badgeText = site.duration_seconds + 's browse';
+  let btnText = 'Start Surfing';
+  let btnDisabled = done || anyOtherBusy;
+  let btnAction = `startSurf('${site.id}')`;
+
+  if(isPendingThis){
+    if(pending.ready){
+      badgeText = 'Ready to claim';
+      btnText = 'Back — Claim Now';
+      btnDisabled = false;
+      btnAction = `claimSurf('${site.id}')`;
+    } else {
+      badgeText = 'Waiting for you to return…';
+      btnText = 'Waiting — tap to check';
+      btnDisabled = false;
+      btnAction = `checkReturn()`;
+    }
+  }
+
   return `
     <div class="item ${done ? 'is-claimed' : ''}" id="card-${site.id}">
       <div class="item-content">
-        <span class="badge ${isPending ? 'pending' : ''}">${isPending ? 'Waiting for you to return' : site.duration_seconds + 's browse'}</span>
+        <span class="badge ${isPendingThis && pending.ready ? 'done' : (isPendingThis ? 'pending' : '')}">${badgeText}</span>
         <div style="font-size:24px;">${site.icon || '🌐'}</div>
         <h3 style="margin:0;">${site.title}</h3>
         <p class="muted" style="font-size:13px; margin:0;">${site.subtitle || ''}</p>
         <div class="reward">+$${Number(site.reward).toFixed(2)}</div>
-        <button class="btn ${done ? 'btn-outline' : 'btn-primary'}" ${done ? 'disabled' : ''}
-          onclick="handleSiteClick('${site.id}')" id="btn-${site.id}">
-          ${done ? 'Come back tomorrow' : (isPending ? 'Back — Claim Now' : 'Start Surfing')}
+        <button class="btn ${btnDisabled && !isPendingThis ? 'btn-outline' : 'btn-primary'}" ${btnDisabled ? 'disabled' : ''}
+          onclick="${btnAction}" id="btn-${site.id}">
+          ${done ? 'Come back tomorrow' : btnText}
         </button>
       </div>
     </div>`;
 }
 
-async function handleSiteClick(siteId){
-  if(pending[siteId]){
-    await claimSurf(siteId);
-  } else {
-    await startSurf(siteId);
-  }
-}
-
 async function startSurf(siteId){
-  const btn = document.getElementById(`btn-${siteId}`);
-  btn.disabled = true;
+  if(pending || otherCampaignActive){ showAlert('Finish your current campaign first — only one at a time.', 'warning'); return; }
   const { data: sessionId, error } = await sb.rpc('start_click_session', { p_item_type: 'surf', p_item_id: siteId });
-  btn.disabled = false;
-  if(error){ showAlert(error.message.includes('daily limit') ? 'Daily surf limit reached for today.' : error.message, 'warning'); return; }
+  if(error){
+    if(error.message.includes('campaign_in_progress')) showAlert('You already have a campaign running. Finish it before starting another.', 'warning');
+    else if(error.message.includes('daily limit')) showAlert('Daily surf limit reached for today.', 'warning');
+    else showAlert(error.message, 'warning');
+    return;
+  }
 
   const site = sites.find(s => s.id === siteId);
   window.open(sharedSiteUrl, '_blank');
-  pending[siteId] = { sessionId, startTime: Date.now(), requiredSeconds: site.duration_seconds };
+  pending = { itemId: siteId, sessionId, startTime: Date.now(), requiredSeconds: site.duration_seconds, ready: false };
 
-  showAlert(`Site opened: <b>${site.title}</b>! Browse there for ${site.duration_seconds}s, then come back here and tap the button again.`, 'success');
-  document.getElementById(`card-${siteId}`).outerHTML = renderCard(site);
+  showAlert(`Site opened: <b>${site.title}</b>! Browse there for ${site.duration_seconds}s, then switch back to this tab.`, 'success');
+  renderAll();
+}
+
+async function checkReturn(){
+  if(!pending) return;
+  const elapsed = Math.floor((Date.now() - pending.startTime)/1000);
+
+  if(elapsed >= pending.requiredSeconds){
+    pending.ready = true;
+    renderAll();
+    return;
+  }
+
+  const remaining = pending.requiredSeconds - elapsed;
+  await sb.rpc('cancel_click_session', { p_session_id: pending.sessionId });
+  showAlert(`You came back too early! You needed ${remaining} more second${remaining===1?'':'s'}. Tap "Start Surfing" to start over.`, 'warning');
+  pending = null;
+  renderAll();
 }
 
 async function claimSurf(siteId){
+  if(!pending || pending.itemId !== siteId) return;
   const btn = document.getElementById(`btn-${siteId}`);
-  btn.disabled = true; btn.textContent = 'Checking…';
-  const session = pending[siteId];
-  const { data: reward, error } = await sb.rpc('claim_click_session', { p_session_id: session.sessionId });
+  btn.disabled = true; btn.textContent = 'Claiming…';
+
+  const { data: reward, error } = await sb.rpc('claim_click_session', { p_session_id: pending.sessionId });
 
   if(error){
-    if(error.message.includes('timer not finished')){
-      const elapsed = Math.floor((Date.now() - session.startTime)/1000);
-      const remaining = Math.max(1, session.requiredSeconds - elapsed);
-      showAlert(`You came back too early! Go back to the site and stay for ${remaining} more second${remaining===1?'':'s'}.`, 'warning');
-    } else {
-      showAlert(error.message, 'warning');
-    }
-    btn.disabled = false; btn.textContent = "I'm back — Claim";
+    showAlert(error.message.includes('timer not finished') ? 'Not quite enough time has passed yet — try again shortly.' : error.message, 'warning');
+    btn.disabled = false; btn.textContent = 'Back — Claim Now';
     return;
   }
 
   showAlert(`Reward claimed: +$${Number(reward).toFixed(2)} 🎉`, 'success');
-  delete pending[siteId];
   claimedToday.add(siteId);
-  document.getElementById(`card-${siteId}`).outerHTML = renderCard(sites.find(s=>s.id===siteId));
+  pending = null;
+  renderAll();
   refreshStats();
 }
 </script>
